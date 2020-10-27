@@ -15,5 +15,13 @@
     "test": "node index.mjs --help"
   },
   "author": "MadProbe#7435",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MadProbe/youtube-video-downloader.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MadProbe/youtube-video-downloader/issues"
+  },
+  "homepage": "https://github.com/MadProbe/youtube-video-downloader#readme"
 }

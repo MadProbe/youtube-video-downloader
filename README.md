@@ -15,8 +15,5 @@ This downloader can download youtube videos with resolution greatest possible re
 
 ### CLI Options:
 
-`--help` | `-h` : Prints a help message
-`--re-encode` : By default input video file is not re-encoded because 
-this greatly degrades download speed, does not affect if video already has an audio thread 
-(typically, videos with resultion greater than 720p doesn't contain an audio thread, 
-so you need to merge a video and audio thread to give video sound).
+* `--help` | `-h` : Prints a help message
+* `--re-encode` : By default input video file is not re-encoded because this greatly degrades download speed, does not affect if video already has an audio thread (typically, videos with resultion greater than 720p doesn't contain an audio thread, so you need to merge a video and audio thread to give video sound).
