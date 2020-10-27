@@ -72,10 +72,8 @@ const args = process.argv.slice(2);
     }
     const meta = await ytdl.getInfo(url);
     const { title } = meta.videoDetails;
-    /**@type { [ytdl.videoFormat, number][] } */
-    // @ts-ignore
     const labels = meta.formats
-        .map(format => [format, parseInt(format.qualityLabel) || 0])
+        .map(/**@returns {[ytdl.videoFormat, number]}*/format => [format, parseInt(format.qualityLabel) || 0])
         .filter(([_, format]) => format <= 1080);
     const [format, quality] = labels.sort((prev, cur) => prev[1] - cur[1]).slice(-1)[0];
     const name = `${ title } ( ${ quality } X ${ quality / 9 * 16 } ).mp4`;
