@@ -1,0 +1,19 @@
+{
+  "name": "youtube-video-downloader",
+  "description": "Youtube Video Downloader",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "dependencies": {
+    "common-tags": "^1.8.0",
+    "ytdl-core": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=14.13.0"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "node index.mjs --help"
+  },
+  "author": "MadProbe#7435",
+  "license": "UNLICENSED"
+}
