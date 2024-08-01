@@ -4,13 +4,15 @@
     "version": "1.0.0",
     "main": "index.mjs",
     "dependencies": {
-        "common-tags": "^1.8.0",
-        "ytdl-core": "^4.0.0"
+        "@distube/ytdl-core": "^4.13.7",
+        "common-tags": "^1.8.0"
     },
     "engines": {
         "node": ">=14.13.0"
     },
-    "devDependencies": {},
+    "devDependencies": {
+        "node-fetch": "^2.6.1"
+    },
     "scripts": {
         "test": "node index.mjs --help"
     },

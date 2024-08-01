@@ -2,4 +2,7 @@ node_modules
 *.mp3
 *.webm
 *.mp4
+*.acc
+*.opus
+yt-video-downloader-*
 package-lock.json
