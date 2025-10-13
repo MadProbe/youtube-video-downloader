@@ -6,3 +6,8 @@ node_modules
 *.opus
 yt-video-downloader-*
 package-lock.json
+*-player-script.js
+cookies.txt
+test-output
+meta-format-saved.txt
+log.log
