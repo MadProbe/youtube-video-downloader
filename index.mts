@@ -6,13 +6,28 @@ import { execSync } from "child_process";
 import { join } from "path";
 import ytdl from "@distube/ytdl-core";
 import { readFile, rm, stat, writeFile } from "fs/promises";
-import { ClientType, Innertube, YTNodes } from 'youtubei.js';
+import { ClientType, Innertube, Platform, type SessionOptions, type Types, YTNodes } from 'youtubei.js';
 import { Readable } from "stream";
 import { inspect, parseArgs } from "util";
 import { pipeline } from "stream/promises";
 import { setGlobalDispatcher } from "undici";
 import { socksDispatcher } from "fetch-socks";
 
+Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
+    const properties = [];
+
+    if (env.n) {
+        properties.push(`n: exportedVars.nFunction("${ env.n }")`);
+    }
+
+    if (env.sig) {
+        properties.push(`sig: exportedVars.sigFunction("${ env.sig }")`);
+    }
+
+    const code = `${ data.output }\nreturn { ${ properties.join(', ') } }`;
+
+    return Function(code)();
+};
 process.env["YTDL_NO_UPDATE"] = "1";
 const dispatcher = socksDispatcher({
     type: 5,
@@ -22,25 +37,19 @@ const dispatcher = socksDispatcher({
 setGlobalDispatcher(dispatcher);
 const ytdlAgent = ytdl.createAgent();
 const cookies = await readFile("./cookies.txt", "utf-8");
-const innertube = await Innertube.create({
+const options: SessionOptions = {
     enable_safety_mode: false,
     user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.3",
-    player_id: '0004de42',
     client_type: ClientType.WEB,
     retrieve_player: true,
     device_category: 'desktop',
     enable_session_cache: true,
     cookie: cookies,
-});
+};
+const innertube = await Innertube.create(options);
 const innertubeTV = await Innertube.create({
-    enable_safety_mode: false,
-    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.3",
-    player_id: '0004de42',
-    client_type: ClientType.TV,
-    retrieve_player: true,
-    device_category: 'desktop',
-    enable_session_cache: true,
-    cookie: cookies,
+    ...options,
+    client_type: ClientType.TV
 });
 ytdlAgent.jar.setCookieSync(cookies, "https://www.youtube.com");
 
@@ -115,7 +124,7 @@ const formatDuration = (join => (seconds: number) => {
 const formatTime = (timed: [number, number], _formatted = formatDuration(timed[0])) =>
     `${ timed[0] ? `${ formatDuration(timed[0]) } and ` : "" }${ (timed[1] - timed[1] % ms_div) / ms_div } ms`;
 const escapeTitle = (title: string) => title.replace(process.platform === "win32" ? /[\:\/\\\"\*\?\<\>\|]/g : /\//g, "_");
-async function getResult<T, A extends any[]>(fn: (...args: A) => T, ...args: Parameters<typeof fn>) {
+async function getResult<T, A extends any[]>(fn: (...args: A) => T, ...args: Parameters<typeof fn>): Promise<Awaited<T> | void> {
     try {
         return await fn(...args);
     } catch (error) {
@@ -127,7 +136,7 @@ async function getResult<T, A extends any[]>(fn: (...args: A) => T, ...args: Par
 let timesUnknownTitle = 0;
 
 async function downloadVideo(videoID: string, providedTitle?: string) {
-    console.log(videoID, providedTitle)
+    console.log(videoID, providedTitle);
     const metaInfo = await innertube.getBasicInfo(videoID, { client: "WEB" });
     // await writeFile("./meta-format-saved.txt", inspect(metaInfo, true, Infinity), "utf8");
     const audio = await innertubeTV.download(videoID, {
@@ -138,8 +147,8 @@ async function downloadVideo(videoID: string, providedTitle?: string) {
     });
     const path = join(outputDir, `${ escapeTitle(providedTitle ?? metaInfo.basic_info.title ?? `??????${ ++timesUnknownTitle }`) }.webm`);
     if (!(await stat(path).catch(() => null as never))?.size)
-    await pipeline(Readable.fromWeb(audio as any),
-        createWriteStream(path));
+        await pipeline(Readable.fromWeb(audio as any),
+            createWriteStream(path));
 }
 
 function assert_type<T>(value: unknown): asserts value is T {
@@ -172,11 +181,11 @@ try {
 }
 
 function toPlaylistID(url: string) {
-    return url.match(/(?<=playlist\?list=)[\w\d]+/i)?.[0];
+    return url.match(/(?<=(playlist\?|&)list=)[\w\d-]+/i)?.[0];
 }
 
 function toVideoID(url: string) {
-    return url.match(/(?<=v=)[\w\d]+/i)?.[0];
+    return url.match(/(?<=v=)[\w\d-]+/i)?.[0];
 }
 /*
 if (musicOnly) {
