@@ -1,11 +1,8 @@
-#!/root/.nvm/versions/node/v24.2.0/bin/node
 // @ts-check
-import { createWriteStream, mkdtempSync } from "fs";
+import { createWriteStream } from "fs";
 import { stripIndents } from "common-tags";
-import { execSync } from "child_process";
 import { join } from "path";
-import ytdl from "@distube/ytdl-core";
-import { readFile, rm, stat, writeFile } from "fs/promises";
+import { readFile, stat } from "fs/promises";
 import { ClientType, Innertube, Platform, type SessionOptions, type Types, YTNodes } from 'youtubei.js';
 import { Readable } from "stream";
 import { inspect, parseArgs } from "util";
@@ -29,13 +26,6 @@ Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, T
     return Function(code)();
 };
 process.env["YTDL_NO_UPDATE"] = "1";
-const dispatcher = socksDispatcher({
-    type: 5,
-    host: "127.0.0.1",
-    port: 9050,
-});
-setGlobalDispatcher(dispatcher);
-const ytdlAgent = ytdl.createAgent();
 const cookies = await readFile("./cookies.txt", "utf-8");
 const options: SessionOptions = {
     enable_safety_mode: false,
@@ -51,9 +41,8 @@ const innertubeTV = await Innertube.create({
     ...options,
     client_type: ClientType.TV
 });
-ytdlAgent.jar.setCookieSync(cookies, "https://www.youtube.com");
 
-const { values: { help: doHelpMessage, "re-encode": reencode, "music-only": musicOnly, "output-dir": outputDir }, positionals } = parseArgs({
+const { values: { help: doHelpMessage, "re-encode": reencode, "music-only": musicOnly, "output-dir": outputDir, "use-tor": useTor }, positionals } = parseArgs({
     "options": {
         help: {
             type: "boolean",
@@ -70,12 +59,25 @@ const { values: { help: doHelpMessage, "re-encode": reencode, "music-only": musi
             type: "string",
             short: "o",
             default: "."
+        },
+        "use-tor": {
+            type: "boolean",
+            short: "t",
+            default: true,
         }
     },
     args: process.argv.slice(2),
     allowPositionals: true,
+    allowNegative: true
 });
-
+if (useTor) {
+    const dispatcher = socksDispatcher({
+        type: 5,
+        host: "127.0.0.1",
+        port: 9050,
+    });
+    setGlobalDispatcher(dispatcher);
+}
 if (doHelpMessage) {
     console.log(stripIndents`
         This is utility for downloading youtube videos, made by MadProbe#7435.
@@ -136,19 +138,20 @@ async function getResult<T, A extends any[]>(fn: (...args: A) => T, ...args: Par
 let timesUnknownTitle = 0;
 
 async function downloadVideo(videoID: string, providedTitle?: string) {
-    console.log(videoID, providedTitle);
+    console.log("Video ID: %s; Title: %s", videoID, providedTitle);
     const metaInfo = await innertube.getBasicInfo(videoID, { client: "WEB" });
     // await writeFile("./meta-format-saved.txt", inspect(metaInfo, true, Infinity), "utf8");
-    const audio = await innertubeTV.download(videoID, {
-        type: "audio",
-        quality: "best",
-        format: "webm",
-        client: 'TV',
-    });
     const path = join(outputDir, `${ escapeTitle(providedTitle ?? metaInfo.basic_info.title ?? `??????${ ++timesUnknownTitle }`) }.webm`);
-    if (!(await stat(path).catch(() => null as never))?.size)
+    if (!(await stat(path).catch(() => null as never))?.size) {
+        const audio = await innertubeTV.download(videoID, {
+            type: "audio",
+            quality: "best",
+            format: "webm",
+            client: 'TV',
+        });
         await pipeline(Readable.fromWeb(audio as any),
             createWriteStream(path));
+    }
 }
 
 function assert_type<T>(value: unknown): asserts value is T {
@@ -156,20 +159,22 @@ function assert_type<T>(value: unknown): asserts value is T {
 }
 
 async function downloadPlaylist(playlistID: string) {
-    const playlistInfo = await innertube.getPlaylist(playlistID);
-    for (const playlistItem of playlistInfo.items) {
-        if (playlistItem.type === "PlaylistVideo") {
-            assert_type<YTNodes.PlaylistVideo>(playlistItem);
-            await getResult(downloadVideo, playlistItem.id, playlistItem.title.toString());
+    let playlistInfo = await innertube.getPlaylist(playlistID);
+    do {
+        console.log("Currently processing %s entries", playlistInfo.items.length);
+        for (const playlistItem of playlistInfo.items) {
+            if (playlistItem.type === "PlaylistVideo") {
+                assert_type<YTNodes.PlaylistVideo>(playlistItem);
+                await getResult(downloadVideo, playlistItem.id, playlistItem.title.toString());
+            }
         }
-    }
+    } while (playlistInfo.has_continuation && (playlistInfo = await playlistInfo.getContinuation()));
 }
 
-console.log(positionals);
 try {
     const playlistID = toPlaylistID(url);
     const videoID = toVideoID(url);
-    console.log(url, videoID, playlistID);
+    console.log("URL: %s; Video ID: %s; Playlist ID: %s", url, videoID, playlistID);
     if (playlistID) {
         await downloadPlaylist(playlistID);
     } else if (videoID) {
