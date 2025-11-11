@@ -138,10 +138,11 @@ async function getResult<T, A extends any[]>(fn: (...args: A) => T, ...args: Par
 let timesUnknownTitle = 0;
 
 async function downloadVideo(videoID: string, providedTitle?: string) {
-    console.log("Video ID: %s; Title: %s", videoID, providedTitle);
     const metaInfo = await innertube.getBasicInfo(videoID, { client: "WEB" });
+    const title = providedTitle ?? metaInfo.basic_info.title ?? `??????${ ++timesUnknownTitle }`;
+    console.log("Video ID: %s; Title: %s", videoID, title);
     // await writeFile("./meta-format-saved.txt", inspect(metaInfo, true, Infinity), "utf8");
-    const path = join(outputDir, `${ escapeTitle(providedTitle ?? metaInfo.basic_info.title ?? `??????${ ++timesUnknownTitle }`) }.webm`);
+    const path = join(outputDir, `${ escapeTitle(title) }.webm`);
     if (!(await stat(path).catch(() => null as never))?.size) {
         const audio = await innertubeTV.download(videoID, {
             type: "audio",
