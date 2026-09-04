@@ -1,3 +1,6 @@
+# THIS README NEEDS SERIOUS UPDATING
+If I am ever going to do it, lol
+
 # Youtube Video Downloader
 
 This downloader can download youtube videos with resolution greatest possible resolution 
@@ -5,7 +8,7 @@ This downloader can download youtube videos with resolution greatest possible re
 
 ## Installation
 
-1. Make sure that you installed `node` >= 18.x.x (or specifically versions with top level await support), `ffmpeg` and `git` .
+1. Make sure that you installed `node` >= 26.x.x<!-- (or specifically versions with top level await support), this is so old, lmao-->, `ffmpeg` and `git` .
 2. Clone this repository by `git clone https://github.com/MadProbe/youtube-video-downloader.git` .
 3. Open your command prompt in cloned folder and install all required modules by `npm i` .
 

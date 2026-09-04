@@ -1,30 +1,90 @@
-// @ts-check
-import { createWriteStream } from "fs";
+// @ts-checkimport { BotGuardClient, getChallenge } from 'bgutils-js/botguard';
+import { BotGuardClient, getChallenge } from "bgutils-js/botguard";
+import type { WebPoSignalOutput } from 'bgutils-js/shared-types';
+import { buildURL, getHeaders } from 'bgutils-js/utils';
+import { WebPoMinter } from 'bgutils-js/webpo';
 import { stripIndents } from "common-tags";
-import { join } from "path";
+import { socksDispatcher } from "fetch-socks";
+import { createWriteStream } from "fs";
 import { readFile, stat } from "fs/promises";
-import { ClientType, Innertube, Platform, type SessionOptions, type Types, YTNodes } from 'youtubei.js';
-import { Readable } from "stream";
-import { inspect, parseArgs } from "util";
+import type { ReloadPlaybackContext } from 'googlevideo/protos';
+import { SabrStream, type SabrPlaybackOptions } from 'googlevideo/sabr-stream';
+import { buildSabrFormat, EnabledTrackTypes } from 'googlevideo/utils';
+import { JSDOM } from 'jsdom';
+import { join } from "path";
+import { Readable, Writable } from "stream";
 import { pipeline } from "stream/promises";
 import { setGlobalDispatcher } from "undici";
-import { socksDispatcher } from "fetch-socks";
+import { inspect, parseArgs } from "util";
+import { ClientType, Constants, Innertube, Platform, YTNodes, type SessionOptions, type Types } from 'youtubei.js';
 
-Platform.shim.eval = async (data: Types.BuildScriptResult, env: Record<string, Types.VMPrimative>) => {
-    const properties = [];
+Platform.shim.eval = async (data: Types.BuildScriptResult) => Function(data.output)();
+/**
+ * Generates a Proof of Origin token bound to the given video id using BotGuard.
+ * A DOM is required because BotGuard expects a browser-like environment.
+ */
+async function generatePoToken(videoID: string): Promise<string> {
+    const requestKey = 'O43z0dpjhgX20SCx4KAo';
 
-    if (env.n) {
-        properties.push(`n: exportedVars.nFunction("${ env.n }")`);
+    const dom = new JSDOM('<!DOCTYPE html><html lang="en"><head><title></title></head><body></body></html>', {
+        url: 'https://www.youtube.com/',
+        referrer: 'https://www.youtube.com/'
+    });
+
+    Object.assign(globalThis, {
+        window: dom.window,
+        document: dom.window.document,
+        location: dom.window.location,
+        origin: dom.window.origin
+    });
+
+    if (!Reflect.has(globalThis, 'navigator')) {
+        Object.defineProperty(globalThis, 'navigator', { value: dom.window.navigator });
     }
 
-    if (env.sig) {
-        properties.push(`sig: exportedVars.sigFunction("${ env.sig }")`);
-    }
+    const challenge = await getChallenge({ fetchFunction: fetch, requestKey });
 
-    const code = `${ data.output }\nreturn { ${ properties.join(', ') } }`;
+    const interpreterJavascript = challenge.interpreterJavascript?.privateDoNotAccessOrElseSafeScriptWrappedValue;
 
-    return Function(code)();
-};
+    if (interpreterJavascript) {
+        new Function(interpreterJavascript)();
+    } else throw new Error('Interpreter javascript not available');
+
+    const botGuardClient = await BotGuardClient.create({
+        program: challenge.program,
+        globalName: challenge.globalName,
+        globalObject: globalThis
+    });
+    //#endregion
+
+    //#region WebPO Minter
+    const webPoSignalOutput: WebPoSignalOutput = [];
+    const botguardResponse = await botGuardClient.snapshot({ webPoSignalOutput });
+
+    const payload = [requestKey, botguardResponse];
+
+    const integrityTokenResponse = await fetch(buildURL('GenerateIT', true), {
+        method: 'POST',
+        headers: getHeaders(),
+        body: JSON.stringify(payload)
+    });
+
+    const integrityTokenJson = await integrityTokenResponse.json() as [string, number, number, string];
+
+    const [integrityToken, estimatedTtlSecs, mintRefreshThreshold, websafeFallbackToken] = integrityTokenJson;
+
+    const integrityTokenData = {
+        integrityToken,
+        estimatedTtlSecs,
+        mintRefreshThreshold,
+        websafeFallbackToken
+    };
+
+    const webPoMinter = await WebPoMinter.create(integrityTokenData, webPoSignalOutput);
+    //#endregion
+    return await webPoMinter.mintAsWebsafeString(videoID);
+}
+
 process.env["YTDL_NO_UPDATE"] = "1";
 const cookies = await readFile("./cookies.txt", "utf-8");
 const options: SessionOptions = {
@@ -135,29 +195,78 @@ async function getResult<T, A extends any[]>(fn: (...args: A) => T, ...args: Par
     }
 }
 
-let timesUnknownTitle = 0;
-
 async function downloadVideo(videoID: string, providedTitle?: string) {
-    const metaInfo = await innertube.getBasicInfo(videoID, { client: "WEB" });
-    const title = providedTitle ?? metaInfo.basic_info.title ?? `??????${ ++timesUnknownTitle }`;
+    const info = await innertube.getBasicInfo(videoID);
+    const title = providedTitle ?? info.basic_info.title ?? videoID;
+    if (info.playability_status?.status !== "OK") {
+        console.log(`${ title } at ${ videoID } cannot be played for some unbeknownst to me reason`);
+        return;
+    }
     console.log("Video ID: %s; Title: %s", videoID, title);
     // await writeFile("./meta-format-saved.txt", inspect(metaInfo, true, Infinity), "utf8");
     const path = join(outputDir, `${ escapeTitle(title) }.webm`);
     if (!(await stat(path).catch(() => null as never))?.size) {
-        const audio = await innertubeTV.download(videoID, {
-            type: "audio",
-            quality: "best",
-            format: "webm",
-            client: 'TV',
+        const poToken = await generatePoToken(videoID);
+
+        const serverAbrStreamingUrl = await innertube.session.player?.decipher(
+            info.streaming_data?.server_abr_streaming_url
+        );
+        const ustreamerConfig = info.player_config
+            ?.media_common_config.media_ustreamer_request_config?.video_playback_ustreamer_config;
+
+        if (!ustreamerConfig)
+            throw new Error('Could not find the ustreamer config in the player response.');
+        if (!serverAbrStreamingUrl)
+            throw new Error('This video has no SABR streaming URL (it may use the legacy protocol).');
+
+        const formats = info.streaming_data?.adaptive_formats.map(buildSabrFormat) ?? [];
+
+        const stream = new SabrStream({
+            formats,
+            serverAbrStreamingUrl,
+            videoPlaybackUstreamerConfig: ustreamerConfig,
+            poToken,
+            clientInfo: {
+                clientName: parseInt(
+                    Constants.CLIENT_NAME_IDS[innertube.session.context.client.clientName as keyof typeof Constants.CLIENT_NAME_IDS]
+                ),
+                clientVersion: innertube.session.context.client.clientVersion
+            }
         });
-        await pipeline(Readable.fromWeb(audio as any),
-            createWriteStream(path));
+
+        // The server may ask us to reload the player response (e.g. when formats expire).
+        stream.on('reloadPlayerResponse', async (_reloadPlaybackContext: ReloadPlaybackContext) => {
+            const reloaded = await innertube.getBasicInfo(videoID);
+            const url = await innertube.session.player?.decipher(reloaded.streaming_data?.server_abr_streaming_url);
+            const config = reloaded.player_config
+                ?.media_common_config.media_ustreamer_request_config?.video_playback_ustreamer_config;
+            if (url && config) {
+                stream.setStreamingURL(url);
+                stream.setUstreamerConfig(config);
+            }
+        });
+
+        const options: SabrPlaybackOptions = {
+            videoQuality: "144p",
+            preferMP4: true,
+            preferH264: true,
+            enabledTrackTypes: EnabledTrackTypes.AUDIO_ONLY
+        };
+
+        console.info('Starting SABR download...\n');
+        const { videoStream, audioStream, selectedFormats } = await stream.start(options);
+        // const audio = await innertubeTV.download(videoID, {
+        //     type: "audio",
+        //     quality: "best",
+        //     format: "webm",
+        //     client: "WEB",
+        // });
+        await Promise.all([Readable.fromWeb(videoStream as any).forEach(() => { }), pipeline(Readable.fromWeb(audioStream as any), createWriteStream(path))]);
+
     }
 }
 
-function assert_type<T>(value: unknown): asserts value is T {
-
-}
+function assert_type<T>(value: unknown): asserts value is T {}
 
 async function downloadPlaylist(playlistID: string) {
     let playlistInfo = await innertube.getPlaylist(playlistID);
@@ -193,85 +302,3 @@ function toPlaylistID(url: string) {
 function toVideoID(url: string) {
     return url.match(/(?<=v=)[\w\d-]+/i)?.[0];
 }
-/*
-if (musicOnly) {
-    function tryDownlaodFormats(containers: [string, string][], meta: import('@distube/ytdl-core').videoInfo) {
-        const format = meta.formats.filter(format => containers.some(container => format.codecs === container[0] && format.container === container[1]) && format.hasAudio && !format.hasVideo)
-            // @ts-ignore
-            .sort((x, y) => y.audioBitrate - x.audioBitrate)[0];
-        if (format) {
-            console.log(`Found`, format, `format`);
-            const time = process.hrtime();
-            const filenameCore = `${ escapeTitle(meta.videoDetails.title) } ( ${ format.audioBitrate ?? "unknown " }kbs )`;
-
-            ytdl.downloadFromInfo(meta, { format: format, })
-                .on("error", console.error)
-                .on("end", () => {
-                    execSync(`ffmpeg -y -i ./"${ filenameCore }.${ format.container }" "./${ filenameCore }.opus"`);
-                    console.log(`File finished downloading in ${ formatTime(process.hrtime(time)) }!`);
-                })
-                .pipe(createWriteStream(`${ filenameCore }.${ format.container }`));
-            return;
-        }
-        console.error("No other audio formats were found...");
-    }
-    console.log([...new Set(meta.formats.map(x => [x.codecs, x.audioCodec, x.container]))]);
-    const opus = meta.formats
-        .filter((format) => format.codecs === 'opus' && format.container === 'webm' && format.hasAudio && !format.hasVideo)
-        // @ts-ignore
-        .sort((a, b) => b.audioBitrate - a.audioBitrate)[0];
-    if (opus && false) {
-        console.log(`!`);
-        const time = process.hrtime();
-        const file = `${ escapeTitle(meta.videoDetails.title) } ( ${ opus.audioBitrate ?? "unknown " }kbs ).opus`;
-        ytdl.downloadFromInfo(meta, { format: opus })
-            .on("error", console.error)
-            .on("end", () => console.log(`File finished downloading in ${ formatTime(process.hrtime(time)) }!`))
-            .pipe(createWriteStream(file));
-    } else {
-        console.error("opus format not found!");
-        tryDownlaodFormats([["mp4a.40.5", "mp4"], ["mp4a.40.2", "mp4"]], meta);
-    }
-} else {
-    function download(filter: import("@distube/ytdl-core").Filter, path: import("fs").PathLike): Promise<void> {
-        return new Promise((resolve, reject) => {
-            ytdl.downloadFromInfo(meta, { filter, format: filter === "videoonly" ? format : void 0, })
-                .on("error", reject)
-                .on("end", resolve)
-                .pipe(createWriteStream(path));
-        });
-    }
-    const { title } = meta.videoDetails;
-    const labels = meta.formats
-        .map((format): [ytdl.videoFormat, number] => [format, parseInt(format.qualityLabel) || 0])
-        .filter(([_, format]) => format <= 1080 && _.hasVideo && (console.log(_.container), _.container) === "mp4");
-    console.log([...new Set(meta.formats.map(x => [x.codecs, x.audioCodec, x.container]))]);
-    const [[format, quality]] = labels.sort((prev, cur) => prev[1] - cur[1]).slice(-1);
-    const tail = `( ${ quality } X ${ quality / 9 * 16 } ).mp4`;
-    const name = `${ escapeTitle(title) } ${ tail }`;
-    const file = join(process.cwd(), name);
-    const _start = process.hrtime();
-    if (!format.hasAudio) {
-        const temp_dir = mkdtempSync("yt-video-downloader-");
-        const temp_audio = join(temp_dir, `1${ Math.random() }.webm`);
-        const temp_video = join(temp_dir, `2${ Math.random() }.${ format.container }`);
-        let start = process.hrtime();
-        await download("audioonly", temp_audio);
-        console.log("audio downloaded in", formatTime(process.hrtime(start)));
-        start = process.hrtime();
-        await download("videoonly", temp_video);
-        console.log("video downloaded in", formatTime(process.hrtime(start)));
-        start = process.hrtime();
-        execSync(`ffmpeg -y -i "${ temp_video }" -i "${ temp_audio }"${ !reencode ? " -c:v copy" : "" } -shortest "${ file }"`, { stdio: [] });
-        console.log("video & audio merged in", formatTime(process.hrtime(start)));
-        await rm(temp_dir, { recursive: true, force: true });
-        console.log(`File finished downloading in ${ formatTime(process.hrtime(_start)) }!`);
-    } else {
-        ytdl.downloadFromInfo(meta, { quality: format.itag })
-            .on("error", console.error)
-            .on("end", () => console.log(`File finished downloading in ${ formatTime(process.hrtime(_start)) }!`))
-            .pipe(createWriteStream(file));
-    }
-    console.log(file);
-}
-*/
